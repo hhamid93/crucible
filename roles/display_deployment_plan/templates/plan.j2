@@ -23,6 +23,7 @@ An OpenShift cluster is about to be deployed. Please double check the provided i
   {{ row_format_str | format('Setup Registry Service', inventory.setup_registry_service) }}
   {{ row_format_str | format('Setup HTTP Store Service', inventory.setup_http_store_service) }}
   {{ row_format_str | format('Setup Assisted Installer', inventory.setup_assisted_installer) }}
+  {{ row_format_str | format('Setup PXE Service', inventory.setup_pxe_service) }}
 
   {{ row_format_str | format('Discovery ISO Name', inventory.discovery_iso_name) }}
   {{ row_format_str | format('Discovery ISO Download Path', inventory.discovery_iso_download_path) }}
@@ -47,6 +48,20 @@ An OpenShift cluster is about to be deployed. Please double check the provided i
 {% else %}
   {{ messages.groups_missing }}{{ '\n' }}
 {% endfor %}
+
+* Image hash caching
+
+  {{ row_format_str | format('Cached image hash file path', inventory.cached_image_hash_file_path)}}
+  {{ row_format_str | format('Cached image hash file exists', inventory.cached_image_hash_file_exists)}}
+  {{ row_format_str | format('Ignoring cached image hash file', inventory.ignore_cached_image_hash_file)}}
+
+  {% if  inventory.cached_image_hash_file_exists and not inventory.ignore_cached_image_hash_file %}
+  NOTE: If you have changed any tags for images, the hash will NOT be updated unless you remove the
+        entry from (or remove the entire file)
+        {{ inventory.cached_image_hash_file_path }}
+        or set ignore_cached_image_hashes to True.
+  {% endif %}
+
 ---
 
 Are you sure you want to proceed with the deployment using this inventory configuration?

@@ -3,7 +3,9 @@
   hosts: bastion
   vars:
     secure: false
-    ASSISTED_INSTALLER_BASE_URL: "{{ secure | ternary('https', 'http') }}://{{ hostvars['assisted_installer']['host'] }}:{{ hostvars['assisted_installer']['port'] }}/api/assisted-install/v1"
+    ASSISTED_INSTALLER_HOST: "{{ hostvars['assisted_installer']['host'] | default(ansible_default_ipv4.address|default(ansible_all_ipv4_addresses[0])) }}"
+    ASSISTED_INSTALLER_PORT: "{{ hostvars['assisted_installer']['port'] | default(8090) }}"
+    ASSISTED_INSTALLER_BASE_URL: "{{ secure | ternary('https', 'http') }}://{{ ASSISTED_INSTALLER_HOST }}:{{ ASSISTED_INSTALLER_PORT }}/api/assisted-install/v2"
     URL_ASSISTED_INSTALLER_CLUSTER: "{{ ASSISTED_INSTALLER_BASE_URL }}/clusters/{{ cluster_id }}"
     kube_filename: "{{ kubeconfig_dest_filename | default(cluster_name + '-kubeconfig') }}"
     dest_dir: "{{ kubeconfig_dest_dir | default(ansible_env.HOME) }}"
@@ -12,15 +14,21 @@
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
   tasks:
+
     - name: Download kubeconfig
       get_url:
-        url: "{{ URL_ASSISTED_INSTALLER_CLUSTER }}/downloads/kubeconfig"
+        url: "{{ URL_ASSISTED_INSTALLER_CLUSTER }}/downloads/credentials?file_name=kubeconfig"
         dest: "{{ kubeconfig_path }}"
         mode: 0664
 
-    - name: Perform simple connectivity check with oc
+      # The retries is becuase sometimes (although rarely) the cluster isn't quite ready for requests
+    - name: Perform simple connectivity check with oc (wait up to 5 mins) 
       shell:
         cmd: "oc explain pods"
+      register: res
+      until: res.rc == 0
+      retries: 5
+      delay: 60
 
     - name: Check status of cluster operators
       block:
@@ -32,7 +40,7 @@
           shell: oc get clusteroperators
           register: co_result
 
-        - fail:
+        - fail:  # noqa unnamed-task
             msg: |
               Cluster has not come up correctly:
                 {{ co_result.stdout }}
@@ -43,7 +51,7 @@
         return_content: yes
       register: credentials
 
-    - name: Login to add token to kubeconfig
+    - name: Login to add token to kubeconfig 
       shell:
         cmd: "oc login -u {{ credentials.json.username }} -p '{{ credentials.json.password }}'"
 
@@ -51,6 +59,7 @@
       copy:
         content: "{{ credentials.json | to_yaml }}"
         dest: "{{ dest_dir }}/{{ kubeadmin_vault_name }}"
+        mode: 0600
 
     - name: Save credentials to vault
       shell:

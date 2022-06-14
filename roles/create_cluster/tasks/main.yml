@@ -1,6 +1,46 @@
 ---
 # tasks file for create_cluster
 
+- name: Set body for create cluster
+  set_fact:
+    # - `ingress_vip` is not provided in the request body because the value
+    #   can't be set for SNO with user-managed networking enabled.
+    #   HA clusters will be patched with the `ingress_vip` setting during
+    #   the execution of the `install_cluster` role.
+    # - the request body is wrapped in a jinja2 expression with the `to_json`
+    #   filter to prevent the `cluster_network_host_prefix` value from being
+    #   type casted to a string. The Assisted Installer API requires this
+    #   input field to be an integer.
+    create_body: '{{
+        {
+          "name": cluster_name,
+          "high_availability_mode": (high_availability_mode | title),
+          "openshift_version": (openshift_version | string),
+          "base_dns_domain": base_dns_domain,
+          "cluster_network_cidr": cluster_network_cidr,
+          "cluster_network_host_prefix": (cluster_network_host_prefix | int),
+          "service_network_cidr": service_network_cidr,
+          "pull_secret": (pull_secret | to_json),
+          "ssh_public_key": ssh_public_key,
+          "vip_dhcp_allocation": (vip_dhcp_allocation | lower | bool),
+          "api_vip": api_vip,
+          "http_proxy": http_proxy,
+          "https_proxy": https_proxy,
+          "no_proxy": no_proxy,
+          "additional_ntp_source": ntp_server,
+          "schedulable_masters": schedulable_masters, 
+        } | to_json
+      }}'
+
+- name: Add network_type to extras for create_body
+  set_fact:
+    create_body_extras: "{{ create_body_extras | combine({'network_type': network_type }) }}"
+  when: network_type is defined
+
+- debug: # noqa unnamed-task
+    msg: "{{ create_body | from_json | combine(create_body_extras) | to_nice_json }}"
+    verbosity: 1
+
 - name: Create cluster
   uri:
     url: "{{ URL_ASSISTED_INSTALLER_CLUSTERS }}"
@@ -10,32 +50,7 @@
     body_format: json
     status_code: [201]
     return_content: True
-    # - `ingress_vip` is not provided in the request body because the value
-    #   can't be set for SNO with user-managed networking enabled.
-    #   HA clusters will be patched with the `ingress_vip` setting during
-    #   the execution of the `install_cluster` role.
-    # - the request body is wrapped in a jinja2 expression with the `to_json`
-    #   filter to prevent the `cluster_network_host_prefix` value from being
-    #   type casted to a string. The Assisted Installer API requires this
-    #   input field to be an integer.
-    body: >-
-      {{ {
-        "name": CLUSTER_NAME,
-        "high_availability_mode": (high_availability_mode | title),
-        "openshift_version": OPENSHIFT_VERSION,
-        "base_dns_domain": BASE_DNS_DOMAIN,
-        "cluster_network_cidr": CLUSTER_NETWORK_CIDR,
-        "cluster_network_host_prefix": (CLUSTER_NETWORK_HOST_PREFIX | int),
-        "service_network_cidr": SERVICE_NETWORK_CIDR,
-        "pull_secret": (PULL_SECRET | to_json),
-        "ssh_public_key": SSH_PUBLIC_KEY,
-        "vip_dhcp_allocation": (VIP_DHCP_ALLOCATION | lower | bool),
-        "api_vip": API_VIP,
-        "http_proxy": HTTP_PROXY,
-        "https_proxy": HTTPS_PROXY,
-        "no_proxy": NO_PROXY,
-        "additional_ntp_source": NTP_SERVER,
-      } | to_json }}
+    body: "{{ create_body | from_json | combine(create_body_extras) | to_json }}"
   when: create | bool == True
   register: http_reply
 
@@ -65,122 +80,3 @@
   delegate_to: localhost
   become: no
   when: create | bool == True
-
-#### patch discovery ignition on restricted network environments ###
-
-- name: Load patch for search registries
-  set_fact:
-    search_registries: "{{ lookup('template', 'patch-search-registries.j2') }}"
-  when: disconnected | bool == True
-
-- debug: # noqa unnamed-task
-    var: search_registries
-    verbosity: 1
-  when: disconnected | bool == True
-
-- name: Load patch for discovery ignition
-  set_fact:
-    patch_discovery_ignition: "{{ lookup('template', 'patch-discovery-ignition.j2') }}"
-  when: disconnected | bool == True
-
-- debug: # noqa unnamed-task
-    var: patch_discovery_ignition
-    verbosity: 1
-  when: disconnected | bool == True
-
-- name: Patch discovery ignition
-  uri:
-    url: "{{ URL_ASSISTED_INSTALLER_CLUSTERS }}/{{ cluster_id }}/discovery-ignition"
-    method: PATCH
-    status_code: [201]
-    return_content: True
-    body_format: json
-    body:
-      {
-        "config": "{{ patch_discovery_ignition | to_json(ensure_ascii=False) | string }}",
-      }
-  when: disconnected | bool == True
-  register: http_reply
-
-- debug: # noqa unnamed-task
-    var: http_reply
-    verbosity: 1
-  when: disconnected | bool == True
-
-#### patch cluster install config on restricted network environments ###
-
-- name: Get install-config file
-  uri:
-    url: "{{ URL_ASSISTED_INSTALLER_CLUSTERS }}/{{ cluster_id }}/install-config"
-    method: GET
-    status_code: [200]
-    return_content: True
-  register: install_config
-
-- debug: # noqa unnamed-task
-    var: install_config.json
-    verbosity: 1
-
-- name: "Copy install_config"
-  copy:
-    content: "{{ install_config.json }}"
-    dest: "{{ fetched_dest }}/install-config.txt"
-    mode: 0644
-  delegate_to: localhost
-  become: no
-
-- name: Load patch for install config
-  set_fact:
-    patch_install_config: "{{ lookup('template', 'patch-install-config.j2') | from_yaml }}"
-  when: disconnected | bool == True
-
-- name: Add network_type to patch_install_config
-  set_fact:
-    patch_install_config: "{{ lookup('template', 'patch-network-type.j2') | from_yaml | combine(patch_install_config | default({}))  }}"
-  when: network_type is defined
-
-- debug: # noqa unnamed-task
-    var: patch_install_config
-    verbosity: 1
-  when: patch_install_config is defined
-
-- name: Patch install config
-  uri:
-    url: "{{ URL_ASSISTED_INSTALLER_CLUSTERS }}/{{ cluster_id }}/install-config"
-    method: PATCH
-    status_code: [201]
-    return_content: True
-    body_format: json
-    body: "{{ patch_install_config | to_json(ensure_ascii=False) | string | to_json(ensure_ascii=False) | string }}"
-  when: patch_install_config is defined
-  register: http_reply
-
-- debug: # noqa unnamed-task
-    var: http_reply
-    verbosity: 1
-  when: patch_install_config is defined
-
-- name: Get install-config file
-  uri:
-    url: "{{ URL_ASSISTED_INSTALLER_CLUSTERS }}/{{ cluster_id }}/install-config"
-    method: GET
-    status_code: [200]
-    return_content: True
-  register: install_config
-
-- debug: # noqa unnamed-task
-    var: install_config.json
-    verbosity: 1
-
-- name: "Copy install_config-json to patched-config.txt"
-  copy:
-    content: "{{ install_config.json }}"
-    dest: "{{ fetched_dest }}/patched-config.txt"
-    mode: 0644
-  delegate_to: localhost
-  become: no
-
-- name: Apply manifests before cluster installation
-  include_tasks: manifest.yml
-  loop: "{{ manifest_templates }}"
-  when: manifests | bool == True

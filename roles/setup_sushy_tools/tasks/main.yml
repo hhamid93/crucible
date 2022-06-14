@@ -42,6 +42,7 @@
               }}"
           when: hostvars[item]['vendor'] | lower == 'kvm'
           loop: "{{ groups['nodes'] }}"
+          no_log: true
 
         - name: Generate htpasswd entry
           command: htpasswd -bBn {{ item.user }} {{ item.password }}
@@ -60,7 +61,8 @@
             force: yes
           become: True
 
-        - include_role:
+        - name: Generate self signed cert for sushy tools.
+          include_role:
             name: setup_selfsigned_cert
           vars:
             cert_dir: "{{ sushy_cert_dir }}"
@@ -69,6 +71,22 @@
             cert_path: "{{ sushy_cert_dir }}/sushy_tools_{{ inventory_hostname }}.crt"
             privatekey_path: "{{ sushy_cert_dir }}/sushy_tools.key"
             cert_common_name: "{{ sushy_fqdn }}"
+
+    - name: Set X86_64 OVMF code path
+      set_fact:
+        sushy_x86_64_ovmf_code_path: "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd"
+
+    - name: Check x86_64 OVMF code path
+      stat:
+        path: "/usr/share/OVMF/OVMF_CODE.secboot.fd"
+      register: OVMF_X86_64_CODE_STAT
+
+    - name: Set x86_64 OVMF code path (legacy)
+      set_fact:
+        sushy_x86_64_ovmf_code_path: "/usr/share/OVMF/OVMF_CODE.secboot.fd"
+      when:
+        - OVMF_X86_64_CODE_STAT.stat.exists
+        - not OVMF_X86_64_CODE_STAT.stat.islnk
 
     - name: Create sushy-tools conf
       template:
